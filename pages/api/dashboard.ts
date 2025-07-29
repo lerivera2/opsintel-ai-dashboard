@@ -1,3 +1,63 @@
+/**
+ * Dashboard API Endpoint - Data Flow and Module Responsibilities
+ * 
+ * PURPOSE: Serves aggregated dashboard data with caching and insights for the client application
+ * 
+ * MODULE RESPONSIBILITIES:
+ * - Data Fetch Module: Retrieves raw data from external APIs, databases, or services
+ *   • fetchFred.ts: FRED API for Industrial Production Index with MoM trends
+ *   • fetchEia.ts: EIA API for Texas electricity pricing with trend analysis
+ *   • fetchWeather.ts: OpenWeatherMap API for El Paso weather and alerts
+ * - Cache Module: Implements caching strategy to reduce API calls and improve performance
+ *   • In-memory cache with configurable TTL (5min data, 30min insights)
+ *   • SHA-1 hash-based cache invalidation for intelligent updates
+ * - Insight Module: Processes raw data to generate analytics, trends, and business insights
+ *   • fetchInsight.ts: Claude AI analysis for operational recommendations
+ *   • Smart caching prevents redundant AI calls for unchanged data
+ * 
+ * DATA FLOW:
+ * 1. Client Request → API endpoint (/pages/api/dashboard.ts)
+ * 2. Check Cache Module → Return cached data if valid and available
+ * 3. If cache miss → Data Fetch Module retrieves fresh data from sources
+ *    • Concurrent API calls to FRED, EIA, and OpenWeatherMap
+ *    • Promise.allSettled() ensures partial failures don't break the system
+ * 4. Raw data → Insight Module for processing and analysis
+ *    • Generate SHA-1 hash from combined data for change detection
+ *    • Call Claude AI only if data hash changed or manual refresh requested
+ * 5. Processed data → Cache Module for storage with TTL
+ * 6. Final response → Client with structured dashboard data
+ * 
+ * RESPONSE FORMAT:
+ * {
+ *   "data": {
+ *     "production": { "index": 102.5, "trend": "↑ 2.1% MoM" },
+ *     "energy": { "centsPerKwh": 12.8, "trend": "up" },
+ *     "weather": { "temp": 95, "alert": "none" },
+ *     "insight": {
+ *       "summary": "Production strong, energy costs rising",
+ *       "recommendation": "Consider energy optimization strategies"
+ *     }
+ *   },
+ *   "lastFetched": "2024-01-15T10:30:00Z",
+ *   "lastInsightRun": "2024-01-15T09:45:00Z"
+ * }
+ * 
+ * ERROR HANDLING:
+ * - Individual API failures are handled gracefully with fallback data
+ * - Claude AI failures fall back to cached insights or contextual defaults
+ * - Always returns HTTP 200 with complete response structure
+ * - Detailed error logging for monitoring and debugging
+ * - Rate limit handling with appropriate retry strategies
+ * 
+ * PERFORMANCE:
+ * - Data caching: 5 minutes TTL to balance freshness and API usage
+ * - Insight caching: 30 minutes TTL for Claude AI responses
+ * - Concurrent API calls reduce total response time
+ * - SHA-1 hash comparison prevents unnecessary Claude API calls
+ * - Manual refresh option via ?refresh=true query parameter
+ * - Rate limits: Respects external API limits with caching and fallbacks
+ */
+
 import type { NextApiRequest, NextApiResponse } from 'next';
 import crypto from 'crypto';
 import { getProductionIndex } from '../../src/lib/fetchFred';
