@@ -220,7 +220,7 @@ Respond with JSON format:
 Focus on cost optimization, production efficiency, and weather-related operational adjustments.`;
 
     const messages: ClaudeMessage[] = [
-      { role: 'user', content: `${systemMessage}\n\n${userMessage}` }
+      { role: 'user', content: userMessage }
     ];
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -233,6 +233,7 @@ Focus on cost optimization, production efficiency, and weather-related operation
       body: JSON.stringify({
         model: 'claude-3-sonnet-20240229',
         max_tokens: 300,
+        system: systemMessage,
         messages: messages,
         temperature: 0.3 // Lower temperature for more consistent responses
       }),
