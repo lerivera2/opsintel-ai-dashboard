@@ -4,7 +4,7 @@ A real-time manufacturing intelligence dashboard using:
 - FRED (Federal Reserve)
 - EIA (Energy Data)
 - OpenWeather
-- Claude (via Lovable)
+- Claude 
 
 ## Setup
 
