@@ -1,1 +1,1 @@
-self.__REACT_LOADABLE_MANIFEST="{}"
+self.__REACT_LOADABLE_MANIFEST="{\"index.tsx -> ../components/OpsIntelDashboard\":{\"id\":\"index.tsx -> ../components/OpsIntelDashboard\",\"files\":[\"static/chunks/components_OpsIntelDashboard_tsx.js\"]}}"
