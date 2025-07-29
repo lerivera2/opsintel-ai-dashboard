@@ -1,0 +1,44 @@
+{
+  "name": "opsintel-ai-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time manufacturing intelligence dashboard with AI insights",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "14.1.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "axios": "^1.6.7",
+    "lucide-react": "^0.323.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "autoprefixer": "^10.4.17",
+    "eslint": "^8.56.0",
+    "eslint-config-next": "14.1.3",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "keywords": [
+    "manufacturing",
+    "dashboard",
+    "ai",
+    "operations",
+    "intelligence",
+    "nextjs",
+    "typescript"
+  ]
+}
