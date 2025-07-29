@@ -1,7 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import crypto from 'crypto';
 import { getProductionIndex } from '../../src/lib/fetchFred';
 import { getEnergyPrice } from '../../src/lib/fetchEia';
 import { getLocalWeather } from '../../src/lib/fetchWeather';
+import { analyzeInsight } from '../../src/lib/fetchInsight';
 
 interface ProductionData {
   index: number;
@@ -23,258 +25,213 @@ interface InsightData {
   recommendation: string;
 }
 
-interface DashboardResponse {
+interface DashboardData {
   production: ProductionData;
   energy: EnergyData;
   weather: WeatherData;
   insight: InsightData;
 }
 
-interface CachedData {
-  data: DashboardResponse;
-  timestamp: number;
-  dataHash: string;
+interface DashboardResponse {
+  data: DashboardData;
+  lastFetched: string;
+  lastInsightRun: string;
 }
 
-// Simple in-memory cache for dashboard data and insights
-class DashboardCache {
-  private cache = new Map<string, CachedData>();
-  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes for dashboard data
-  private readonly INSIGHT_TTL = 30 * 60 * 1000; // 30 minutes for Claude insights
+interface CacheEntry {
+  data: DashboardData;
+  dataHash: string;
+  lastFetched: string;
+  lastInsightRun: string;
+  expires: number;
+}
 
-  set(key: string, data: DashboardResponse, dataHash: string) {
+// Simple in-memory cache for dashboard data
+class DashboardCache {
+  private cache = new Map<string, CacheEntry>();
+  private readonly DATA_TTL = 5 * 60 * 1000; // 5 minutes
+  private readonly INSIGHT_TTL = 30 * 60 * 1000; // 30 minutes
+
+  set(key: string, data: DashboardData, dataHash: string, insightUpdated: boolean = false) {
+    const now = new Date().toISOString();
+    const existing = this.cache.get(key);
+    
     this.cache.set(key, {
       data,
-      timestamp: Date.now(),
-      dataHash
+      dataHash,
+      lastFetched: now,
+      lastInsightRun: insightUpdated ? now : (existing?.lastInsightRun || now),
+      expires: Date.now() + this.DATA_TTL
     });
   }
 
-  get(key: string): CachedData | null {
+  get(key: string): CacheEntry | null {
     const item = this.cache.get(key);
-    if (!item) return null;
-
-    const ttl = key.includes('insight') ? this.INSIGHT_TTL : this.CACHE_TTL;
-    if (Date.now() - item.timestamp > ttl) {
+    if (!item || Date.now() > item.expires) {
       this.cache.delete(key);
       return null;
     }
-
     return item;
   }
 
-  hasSignificantChange(newDataHash: string): boolean {
+  needsInsightUpdate(dataHash: string): boolean {
     const cached = this.get('dashboard');
-    return !cached || cached.dataHash !== newDataHash;
+    if (!cached) return true;
+    
+    // Check if data hash changed or insight is too old
+    const insightAge = Date.now() - new Date(cached.lastInsightRun).getTime();
+    return cached.dataHash !== dataHash || insightAge > this.INSIGHT_TTL;
   }
 }
 
 const cache = new DashboardCache();
 
 /**
- * Generates a hash of the data to detect significant changes
+ * Generates SHA-1 hash from combined data for cache invalidation
  */
 function generateDataHash(production: ProductionData, energy: EnergyData, weather: WeatherData): string {
-  // Create a hash based on key values that would trigger new insights
-  const significantData = {
-    productionIndex: Math.round(production.index * 10), // Round to 1 decimal
-    energyPrice: Math.round(energy.centsPerKwh * 100), // Round to 2 decimals
-    weatherTemp: Math.round(weather.temp / 5) * 5, // Round to nearest 5 degrees
-    weatherAlert: weather.alert !== 'none' ? 'alert' : 'none',
-    energyTrend: energy.trend,
-    productionTrend: production.trend.includes('↑') ? 'up' : production.trend.includes('↓') ? 'down' : 'stable'
+  const combinedData = {
+    production: {
+      index: Math.round(production.index * 10) / 10,
+      trend: production.trend
+    },
+    energy: {
+      centsPerKwh: Math.round(energy.centsPerKwh * 100) / 100,
+      trend: energy.trend
+    },
+    weather: {
+      temp: Math.round(weather.temp / 5) * 5, // Round to nearest 5°
+      alert: weather.alert
+    }
   };
 
-  return JSON.stringify(significantData);
+  const dataString = JSON.stringify(combinedData, Object.keys(combinedData).sort());
+  return crypto.createHash('sha1').update(dataString).digest('hex');
 }
 
 /**
- * Analyzes operational data using Claude AI to generate insights and recommendations
+ * Fetches data from all sources with error handling
  */
-async function analyzeInsight(data: { production: ProductionData; energy: EnergyData; weather: WeatherData }): Promise<InsightData> {
-  try {
-    const claudeApiKey = process.env.CLAUDE_API_KEY;
-    if (!claudeApiKey) {
-      throw new Error('CLAUDE_API_KEY environment variable is required');
-    }
+async function fetchAllData(): Promise<{
+  production: ProductionData;
+  energy: EnergyData;
+  weather: WeatherData;
+}> {
+  const [productionResult, energyResult, weatherResult] = await Promise.allSettled([
+    getProductionIndex(),
+    getEnergyPrice(),
+    getLocalWeather()
+  ]);
 
-    const prompt = `Analyze this manufacturing operations data for El Paso, TX and provide a brief insight:
+  // Extract data with fallbacks
+  const production: ProductionData = productionResult.status === 'fulfilled'
+    ? productionResult.value
+    : { index: 102.4, trend: '→ Data unavailable' };
 
-Production Index: ${data.production.index} (${data.production.trend})
-Energy Cost: ${data.energy.centsPerKwh}¢/kWh (trend: ${data.energy.trend})
-Weather: ${data.weather.temp}°F (alert: ${data.weather.alert})
+  const energy: EnergyData = energyResult.status === 'fulfilled'
+    ? energyResult.value
+    : { centsPerKwh: 12.5, trend: 'stable' };
 
-Provide a concise analysis in this format:
-1. A brief summary of the current operational conditions (max 15 words)
-2. One actionable recommendation for manufacturing operations (max 20 words)
+  const weather: WeatherData = weatherResult.status === 'fulfilled'
+    ? weatherResult.value
+    : { temp: 75, alert: 'Weather data unavailable' };
 
-Focus on cost optimization, production efficiency, and weather-related operational adjustments.`;
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': claudeApiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-3-sonnet-20240229',
-        max_tokens: 200,
-        messages: [{
-          role: 'user',
-          content: prompt
-        }]
-      }),
-      signal: AbortSignal.timeout(15000) // 15 second timeout
-    });
-
-    if (!response.ok) {
-      throw new Error(`Claude API error: ${response.status} ${response.statusText}`);
-    }
-
-    const result = await response.json();
-    const content = result.content?.[0]?.text || '';
-
-    // Parse the response to extract summary and recommendation
-    const lines = content.split('\n').filter(line => line.trim());
-    let summary = 'Operational data analyzed';
-    let recommendation = 'Monitor conditions and adjust as needed';
-
-    // Try to extract structured response
-    for (const line of lines) {
-      if (line.includes('summary') || line.match(/^\d+\./)) {
-        summary = line.replace(/^\d+\.?\s*/, '').replace(/summary:?\s*/i, '').trim();
-      } else if (line.includes('recommendation') || (summary !== 'Operational data analyzed' && line.trim())) {
-        recommendation = line.replace(/^\d+\.?\s*/, '').replace(/recommendation:?\s*/i, '').trim();
-        break;
-      }
-    }
-
-    // Fallback parsing if structured format not found
-    if (summary === 'Operational data analyzed' && lines.length >= 2) {
-      summary = lines[0].replace(/^\d+\.?\s*/, '').trim();
-      recommendation = lines[1].replace(/^\d+\.?\s*/, '').trim();
-    }
-
-    return {
-      summary: summary.substring(0, 100), // Limit length
-      recommendation: recommendation.substring(0, 150) // Limit length
-    };
-
-  } catch (error) {
-    console.error('Error calling Claude API:', error);
-    
-    // Return contextual fallback based on the data
-    let summary = 'Data analysis unavailable';
-    let recommendation = 'Monitor key metrics and adjust operations as needed';
-
-    // Generate basic insights based on data patterns
-    if (data.weather.temp >= 100) {
-      summary = 'Extreme heat conditions detected';
-      recommendation = 'Consider shifting operations to cooler hours';
-    } else if (data.energy.trend === 'up') {
-      summary = 'Energy costs trending upward';
-      recommendation = 'Optimize energy usage and consider off-peak scheduling';
-    } else if (data.weather.alert !== 'none') {
-      summary = 'Weather alert active';
-      recommendation = 'Monitor weather conditions and prepare contingency plans';
-    }
-
-    return { summary, recommendation };
+  // Log any failures
+  if (productionResult.status === 'rejected') {
+    console.error('Production data fetch failed:', productionResult.reason);
   }
+  if (energyResult.status === 'rejected') {
+    console.error('Energy data fetch failed:', energyResult.reason);
+  }
+  if (weatherResult.status === 'rejected') {
+    console.error('Weather data fetch failed:', weatherResult.reason);
+  }
+
+  return { production, energy, weather };
 }
 
 /**
- * Main dashboard API handler that aggregates data from multiple sources
+ * Main dashboard API handler
  */
-export default async function handler(req: NextApiRequest, res: NextApiResponse<DashboardResponse>) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<DashboardResponse>
+) {
   try {
-    // Check if this is a manual refresh request
     const isManualRefresh = req.query.refresh === 'true';
 
-    // Fetch data from all sources concurrently
-    const [production, energy, weather] = await Promise.allSettled([
-      getProductionIndex(),
-      getEnergyPrice(),
-      getLocalWeather()
-    ]);
+    // Fetch all data sources
+    const { production, energy, weather } = await fetchAllData();
 
-    // Extract successful results or use fallback values
-    const productionData: ProductionData = production.status === 'fulfilled' 
-      ? production.value 
-      : { index: 102.4, trend: '→ Data unavailable' };
+    // Generate hash for change detection
+    const currentDataHash = generateDataHash(production, energy, weather);
 
-    const energyData: EnergyData = energy.status === 'fulfilled' 
-      ? energy.value 
-      : { centsPerKwh: 12.5, trend: 'stable' };
+    // Check if we need new insights
+    const needsInsightUpdate = isManualRefresh || cache.needsInsightUpdate(currentDataHash);
 
-    const weatherData: WeatherData = weather.status === 'fulfilled' 
-      ? weather.value 
-      : { temp: 75, alert: 'Weather data unavailable' };
+    let insight: InsightData;
+    let insightUpdated = false;
 
-    // Log any failures for monitoring
-    if (production.status === 'rejected') {
-      console.error('Production data fetch failed:', production.reason);
-    }
-    if (energy.status === 'rejected') {
-      console.error('Energy data fetch failed:', energy.reason);
-    }
-    if (weather.status === 'rejected') {
-      console.error('Weather data fetch failed:', weather.reason);
-    }
-
-    // Generate data hash for change detection
-    const currentDataHash = generateDataHash(productionData, energyData, weatherData);
-
-    // Check if we need to call Claude for new insights
-    let insightData: InsightData;
-    const needsNewInsight = isManualRefresh || cache.hasSignificantChange(currentDataHash);
-
-    if (needsNewInsight) {
+    if (needsInsightUpdate) {
       console.log('Generating new insights with Claude AI...');
-      insightData = await analyzeInsight({
-        production: productionData,
-        energy: energyData,
-        weather: weatherData
-      });
+      try {
+        insight = await analyzeInsight({ production, energy, weather });
+        insightUpdated = true;
+      } catch (error) {
+        console.error('Claude insight generation failed:', error);
+        // Use cached insight if available
+        const cached = cache.get('dashboard');
+        insight = cached?.data.insight || {
+          summary: 'Analysis temporarily unavailable',
+          recommendation: 'Monitor conditions and try refreshing later'
+        };
+      }
     } else {
-      // Use cached insight if available
-      const cachedInsight = cache.get('insight');
-      insightData = cachedInsight?.data.insight || {
+      // Use cached insight
+      const cached = cache.get('dashboard');
+      insight = cached?.data.insight || {
         summary: 'Using cached analysis',
-        recommendation: 'Monitor conditions for changes'
+        recommendation: 'Data unchanged since last analysis'
       };
     }
 
-    // Construct the response
-    const responseData: DashboardResponse = {
-      production: productionData,
-      energy: energyData,
-      weather: weatherData,
-      insight: insightData
+    // Construct response data
+    const dashboardData: DashboardData = {
+      production,
+      energy,
+      weather,
+      insight
     };
 
-    // Cache the complete response
-    cache.set('dashboard', responseData, currentDataHash);
-    if (needsNewInsight) {
-      cache.set('insight', responseData, currentDataHash);
-    }
+    // Update cache
+    cache.set('dashboard', dashboardData, currentDataHash, insightUpdated);
 
-    // Always return 200 with complete data
-    res.status(200).json(responseData);
+    // Get timestamps from cache
+    const cacheEntry = cache.get('dashboard');
+    const response: DashboardResponse = {
+      data: dashboardData,
+      lastFetched: cacheEntry?.lastFetched || new Date().toISOString(),
+      lastInsightRun: cacheEntry?.lastInsightRun || new Date().toISOString()
+    };
+
+    res.status(200).json(response);
 
   } catch (error) {
     console.error('Dashboard API error:', error);
 
-    // Return fallback data structure to ensure UI doesn't break
+    // Return fallback response
     const fallbackResponse: DashboardResponse = {
-      production: { index: 102.4, trend: '→ Data unavailable' },
-      energy: { centsPerKwh: 12.5, trend: 'stable' },
-      weather: { temp: 75, alert: 'Data unavailable' },
-      insight: {
-        summary: 'System temporarily unavailable',
-        recommendation: 'Please try refreshing in a few minutes'
-      }
+      data: {
+        production: { index: 102.4, trend: '→ Data unavailable' },
+        energy: { centsPerKwh: 12.5, trend: 'stable' },
+        weather: { temp: 75, alert: 'Data unavailable' },
+        insight: {
+          summary: 'System temporarily unavailable',
+          recommendation: 'Please try refreshing in a few minutes'
+        }
+      },
+      lastFetched: new Date().toISOString(),
+      lastInsightRun: new Date().toISOString()
     };
 
     res.status(200).json(fallbackResponse);

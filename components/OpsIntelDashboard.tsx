@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 export default function OpsIntelDashboard() {
   const [data, setData] = useState(null);
+  const [lastFetched, setLastFetched] = useState(null);
+  const [lastInsightRun, setLastInsightRun] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -9,7 +11,9 @@ export default function OpsIntelDashboard() {
     try {
       const res = await fetch("/api/dashboard");
       const json = await res.json();
-      setData(json);
+      setData(json.data);
+      setLastFetched(json.lastFetched);
+      setLastInsightRun(json.lastInsightRun);
       setLoading(false);
     } catch (err) {
       setError("Error fetching data");
@@ -44,14 +48,26 @@ export default function OpsIntelDashboard() {
         <p className="font-medium">💡 {data.insight.recommendation}</p>
         <button
           className="mt-4 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded text-white"
-          onClick={fetchData}
+          onClick={() => {
+            const refreshUrl = "/api/dashboard?refresh=true";
+            fetch(refreshUrl)
+              .then(res => res.json())
+              .then(json => {
+                setData(json.data);
+                setLastFetched(json.lastFetched);
+                setLastInsightRun(json.lastInsightRun);
+              })
+              .catch(err => console.error('Refresh failed:', err));
+          }}
         >
           🔁 Refresh Insight
         </button>
       </div>
 
-      <footer className="text-sm text-gray-400 pt-4">
-        Last updated: {new Date().toLocaleTimeString()} | Powered by FRED, EIA, OpenWeather, Claude
+      <footer className="text-sm text-gray-400 pt-4 space-y-1">
+        <div>Data updated: {lastFetched ? new Date(lastFetched).toLocaleTimeString() : 'Loading...'}</div>
+        <div>Insights updated: {lastInsightRun ? new Date(lastInsightRun).toLocaleTimeString() : 'Loading...'}</div>
+        <div>Powered by FRED, EIA, OpenWeather, Claude</div>
       </footer>
     </div>
   );
