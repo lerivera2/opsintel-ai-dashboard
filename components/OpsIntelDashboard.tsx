@@ -1,22 +1,62 @@
 import { useEffect, useState } from "react";
 
+interface ProductionData {
+  index: number;
+  trend: string;
+}
+
+interface EnergyData {
+  centsPerKwh: number;
+  trend: 'up' | 'down' | 'stable';
+}
+
+interface WeatherData {
+  temp: number;
+  alert: string;
+}
+
+interface InsightData {
+  summary: string;
+  recommendation: string;
+}
+
+interface DashboardData {
+  production: ProductionData;
+  energy: EnergyData;
+  weather: WeatherData;
+  insight: InsightData;
+}
+
+const defaultDashboardData: DashboardData = {
+  production: { index: 0, trend: 'Loading...' },
+  energy: { centsPerKwh: 0, trend: 'stable' },
+  weather: { temp: 0, alert: 'Loading...' },
+  insight: { summary: 'Fetching insights...', recommendation: 'Please wait...' }
+};
+
 export default function OpsIntelDashboard() {
-  const [data, setData] = useState(null);
-  const [lastFetched, setLastFetched] = useState(null);
-  const [lastInsightRun, setLastInsightRun] = useState(null);
+  const [data, setData] = useState<DashboardData>(defaultDashboardData);
+  const [lastFetched, setLastFetched] = useState<string | null>(null);
+  const [lastInsightRun, setLastInsightRun] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = async () => {
+    setLoading(true);
     try {
       const res = await fetch("/api/dashboard");
       const json = await res.json();
-      setData(json.data);
-      setLastFetched(json.lastFetched);
-      setLastInsightRun(json.lastInsightRun);
-      setLoading(false);
+      if (json && json.data) {
+        setData(json.data);
+        setLastFetched(json.lastFetched);
+        setLastInsightRun(json.lastInsightRun);
+      } else {
+        setError("Received invalid data structure from API.");
+      }
     } catch (err) {
-      setError("Error fetching data");
+      console.error("Error in fetchData:", err);
+      setError("Error fetching data from dashboard API.");
+    } finally {
       setLoading(false);
     }
   };
@@ -27,8 +67,9 @@ export default function OpsIntelDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  if (loading) return <div className="p-4">Loading...</div>;
+  if (loading && data === defaultDashboardData) return <div className="p-4">Loading...</div>;
   if (error) return <div className="p-4 text-red-500">{error}</div>;
+  if (!data) return <div className="p-4 text-red-500">Dashboard data not available.</div>;
 
   return (
     <div className="p-4 space-y-6">
@@ -49,15 +90,26 @@ export default function OpsIntelDashboard() {
         <button
           className="mt-4 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded text-white"
           onClick={() => {
+            setLoading(true);
             const refreshUrl = "/api/dashboard?refresh=true";
             fetch(refreshUrl)
               .then(res => res.json())
               .then(json => {
-                setData(json.data);
-                setLastFetched(json.lastFetched);
-                setLastInsightRun(json.lastInsightRun);
+                if (json && json.data) {
+                  setData(json.data);
+                  setLastFetched(json.lastFetched);
+                  setLastInsightRun(json.lastInsightRun);
+                } else {
+                  setError("Received invalid data structure on refresh.");
+                }
               })
-              .catch(err => console.error('Refresh failed:', err));
+              .catch(err => {
+                console.error('Refresh failed:', err);
+                setError("Refresh failed: Could not fetch new data.");
+              })
+              .finally(() => {
+                setLoading(false);
+              });
           }}
         >
           🔁 Refresh Insight
@@ -72,8 +124,15 @@ export default function OpsIntelDashboard() {
     </div>
   );
 }
+ 
+interface MetricCardProps {
+  title: string;
+  value: number;
+  unit: string;
+  trend: string;
+}
 
-function MetricCard({ title, value, unit, trend }) {
+function MetricCard({ title, value, unit, trend }: MetricCardProps) {
   return (
     <div className="bg-gray-900 p-4 rounded-xl text-white shadow">
       <h3 className="text-md font-medium mb-1">{title}</h3>
